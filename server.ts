@@ -12,6 +12,14 @@ const PORT = 3000;
 // Middleware
 app.use(express.json());
 
+// Graceful JSON parsing error handling
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (err instanceof SyntaxError && "body" in err) {
+    return res.status(400).json({ error: "请求数据不是有效的 JSON 格式" });
+  }
+  return next(err);
+});
+
 // Initialize Gemini SDK lazily
 let ai: GoogleGenAI | null = null;
 
@@ -1054,6 +1062,11 @@ app.get("/api/auth/demo-accounts", (req, res) => {
       { type: "email", account: "sales@anker.com", name: "李主管 (大客户经理)", role: "大客户销售经理", password: "admin" }
     ]
   });
+});
+
+// Fallback for any unmatched /api routes to guarantee JSON response (never serve HTML)
+app.all("/api/*", (req, res) => {
+  return res.status(404).json({ error: `API 接口未找到: ${req.method} ${req.path}` });
 });
 
 async function bootstrap() {
