@@ -77,8 +77,36 @@ export default function AuthView({
     setAccountType(type);
     setErrorMsg(null);
     setReceivedCodeHint(null);
-    setAccount("");
-    setCode("");
+    // Note: preserve current account text so user input isn't accidentally lost
+  };
+
+  // Helper to sanitize and normalize email inputs (handles Chinese IME fullwidth characters)
+  const sanitizeEmailInput = (val: string): string => {
+    return val
+      .replace(/[\uFF01-\uFF5E]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
+      .replace(/。/g, ".")
+      .replace(/，/g, ".")
+      .replace(/＠/g, "@")
+      .replace(/\s+/g, "")
+      .trim()
+      .toLowerCase();
+  };
+
+  // Intelligent account input handler: auto-detects phone vs email
+  const handleAccountChange = (val: string) => {
+    setAccount(val);
+    setErrorMsg(null);
+
+    const trimmed = val.trim();
+    if (trimmed.includes("@") || trimmed.includes("＠")) {
+      if (accountType !== "email") {
+        setAccountType("email");
+      }
+    } else if (/^1[3-9]\d*$/.test(trimmed.replace(/\s+/g, "")) && trimmed.length <= 11) {
+      if (accountType !== "phone" && !trimmed.includes("@")) {
+        setAccountType("phone");
+      }
+    }
   };
 
   // 1. Send verification code
@@ -86,20 +114,26 @@ export default function AuthView({
     setErrorMsg(null);
     setSuccessMsg(null);
 
-    const cleanAccount = account.trim();
-    if (!cleanAccount) {
+    const rawAccount = account.trim();
+    if (!rawAccount) {
       setErrorMsg(accountType === "phone" ? "请输入手机号码" : "请输入电子邮箱");
       return;
     }
 
-    if (accountType === "phone" && !/^1[3-9]\d{9}$/.test(cleanAccount)) {
-      setErrorMsg("请输入规范的11位中国大陆手机号（如 13800138000）");
-      return;
-    }
+    const isEmailFormat = rawAccount.includes("@") || rawAccount.includes("＠") || accountType === "email";
+    const cleanAccount = isEmailFormat ? sanitizeEmailInput(rawAccount) : rawAccount.replace(/\s+/g, "");
 
-    if (accountType === "email" && !/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(cleanAccount)) {
-      setErrorMsg("请输入规范的电子邮箱地址（如 sales@company.com）");
-      return;
+    if (!isEmailFormat) {
+      if (!/^1[3-9]\d{9}$/.test(cleanAccount)) {
+        setErrorMsg("请输入规范的11位中国大陆手机号（如 13800138000）");
+        return;
+      }
+    } else {
+      // Flexible RFC 5322 compatible regex: allows enterprise subdomains, hyphens, etc.
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanAccount)) {
+        setErrorMsg("请输入规范的电子邮箱地址（如 sales@company.com 或 user@sh.anker.com）");
+        return;
+      }
     }
 
     setIsSendingCode(true);
@@ -109,7 +143,7 @@ export default function AuthView({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           account: cleanAccount,
-          type: accountType,
+          type: isEmailFormat ? "email" : "phone",
           purpose: mode
         })
       });
@@ -123,6 +157,8 @@ export default function AuthView({
       setSuccessMsg(data.message || "验证码已发送");
       if (data.code) {
         setReceivedCodeHint(data.code);
+        // Automatically prefill verification code for smooth user testing
+        setCode(data.code);
       }
     } catch (err: any) {
       setErrorMsg(err.message || "网络请求失败，请稍后重试");
@@ -137,6 +173,29 @@ export default function AuthView({
       setCode(receivedCodeHint);
       setSuccessMsg("已为您自动填入验证码");
     }
+  };
+
+  // Switch to login mode directly if user already has an account
+  const handleSwitchToLoginWithAccount = (acc: string) => {
+    setMode("login");
+    setAccount(acc);
+    setAccountType(acc.includes("@") ? "email" : "phone");
+    setErrorMsg(null);
+    setSuccessMsg("已切换至登录，请输入密码或获取验证码登录");
+  };
+
+  // Quick fill a fresh test email for registration verification
+  const handleFillFreshTestEmail = () => {
+    const randomSuffix = Math.floor(1000 + Math.random() * 9000);
+    const testEmail = `sales.test${randomSuffix}@anker.com`;
+    setAccountType("email");
+    setAccount(testEmail);
+    setName("新销售经理");
+    setRole("销售客户经理");
+    setDepartment("华东大区销售部");
+    setPassword("password123");
+    setErrorMsg(null);
+    setSuccessMsg(`已填入新企业测试邮箱 ${testEmail}，请点击“获取验证码”测试注册`);
   };
 
   // 2. Submit form (Register or Login)
@@ -250,6 +309,7 @@ export default function AuthView({
 
   // Preset demo account login
   const handleQuickDemoLogin = (demoType: "phone" | "email") => {
+    setMode("login"); // Auto-switch to login tab for active demo accounts
     if (demoType === "phone") {
       setAccountType("phone");
       setAccount("13800138000");
@@ -262,7 +322,7 @@ export default function AuthView({
       setPassword("admin");
     }
     setErrorMsg(null);
-    setSuccessMsg("已载入预置演示账号，点击登录即可进入");
+    setSuccessMsg("已切换至登录并载入预置演示账号，点击登录即可进入系统");
   };
 
   return (
@@ -313,7 +373,18 @@ export default function AuthView({
           {errorMsg && (
             <div className="mb-5 p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-start space-x-2 animate-in fade-in" id="auth-error-alert">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-500" />
-              <div className="flex-1 font-medium">{errorMsg}</div>
+              <div className="flex-1 font-medium leading-relaxed">
+                {errorMsg}
+                {(errorMsg.includes("已注册") || errorMsg.includes("已存在")) && (
+                  <button
+                    type="button"
+                    onClick={() => handleSwitchToLoginWithAccount(account)}
+                    className="ml-2 inline-flex items-center text-rose-900 font-bold underline hover:text-sky-600 transition-colors cursor-pointer"
+                  >
+                    👉 点此立即切换至登录
+                  </button>
+                )}
+              </div>
             </div>
           )}
 
@@ -330,13 +401,13 @@ export default function AuthView({
               <div className="flex items-center space-x-2">
                 <ShieldCheck className="w-4 h-4 text-sky-600" />
                 <span>
-                  模拟短信/邮件已收到：<strong className="font-mono text-sm tracking-widest text-sky-700">{receivedCodeHint}</strong>
+                  模拟邮件/短信验证码已收到：<strong className="font-mono text-sm tracking-widest text-sky-700">{receivedCodeHint}</strong>
                 </span>
               </div>
               <button
                 type="button"
                 onClick={handleAutofillCode}
-                className="px-2.5 py-1 bg-sky-600 hover:bg-sky-700 text-white text-[11px] font-semibold rounded-lg shadow-2xs transition-colors"
+                className="px-2.5 py-1 bg-sky-600 hover:bg-sky-700 text-white text-[11px] font-semibold rounded-lg shadow-2xs transition-colors cursor-pointer"
                 id="btn-autofill-verification-code"
               >
                 点此自动填入
@@ -356,7 +427,7 @@ export default function AuthView({
                     type="button"
                     id="tab-account-phone"
                     onClick={() => handleSwitchAccountType("phone")}
-                    className={`px-2.5 py-1 rounded-md font-medium transition-all flex items-center gap-1 ${
+                    className={`px-2.5 py-1 rounded-md font-medium transition-all flex items-center gap-1 cursor-pointer ${
                       accountType === "phone"
                         ? "bg-white text-sky-600 shadow-2xs font-semibold"
                         : "text-slate-500 hover:text-slate-800"
@@ -369,7 +440,7 @@ export default function AuthView({
                     type="button"
                     id="tab-account-email"
                     onClick={() => handleSwitchAccountType("email")}
-                    className={`px-2.5 py-1 rounded-md font-medium transition-all flex items-center gap-1 ${
+                    className={`px-2.5 py-1 rounded-md font-medium transition-all flex items-center gap-1 cursor-pointer ${
                       accountType === "email"
                         ? "bg-white text-sky-600 shadow-2xs font-semibold"
                         : "text-slate-500 hover:text-slate-800"
@@ -390,8 +461,14 @@ export default function AuthView({
                   id="input-auth-account"
                   type={accountType === "phone" ? "tel" : "email"}
                   value={account}
-                  onChange={(e) => setAccount(e.target.value)}
-                  placeholder={accountType === "phone" ? "请输入11位中国大陆手机号码" : "请输入企业工作电子邮箱"}
+                  onChange={(e) => handleAccountChange(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && mode === "register" && !code) {
+                      e.preventDefault();
+                      handleSendCode();
+                    }
+                  }}
+                  placeholder={accountType === "phone" ? "请输入11位中国大陆手机号码 (如 13800138000)" : "请输入企业工作电子邮箱 (如 sales@company.com)"}
                   className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-300 focus:border-sky-500 focus:ring-2 focus:ring-sky-500/20 text-sm font-medium text-slate-900 outline-hidden transition-all"
                   required
                 />
@@ -627,41 +704,77 @@ export default function AuthView({
             </button>
           </form>
 
-          {/* Quick Demo Accounts for effortless verification */}
+          {/* Quick Demo Accounts and Registration Shortcuts */}
           <div className="mt-6 pt-5 border-t border-slate-100">
-            <div className="flex items-center justify-between text-xs text-slate-500 mb-2.5">
-              <span className="flex items-center gap-1">
-                <UserCheck className="w-3.5 h-3.5 text-slate-400" />
-                快速测试体验账号：
-              </span>
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                id="btn-demo-account-phone"
-                onClick={() => handleQuickDemoLogin("phone")}
-                className="p-2.5 rounded-xl border border-slate-200 hover:border-sky-400 bg-slate-50 hover:bg-sky-50/50 text-left transition-all group"
-              >
-                <div className="text-xs font-bold text-slate-800 group-hover:text-sky-600 flex items-center gap-1">
-                  <Phone className="w-3 h-3 text-sky-500" />
-                  手机号演示账号
+            {mode === "register" ? (
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
+                  <span className="flex items-center gap-1 font-semibold text-slate-700">
+                    <Sparkles className="w-3.5 h-3.5 text-sky-500" />
+                    快速注册测试通道：
+                  </span>
+                  <span className="text-[11px] text-slate-400">一键免手输</span>
                 </div>
-                <div className="text-[11px] text-slate-400 font-mono mt-0.5">13800138000</div>
-              </button>
+                <button
+                  type="button"
+                  id="btn-fill-test-email"
+                  onClick={handleFillFreshTestEmail}
+                  className="w-full p-2.5 rounded-xl border border-sky-200 hover:border-sky-400 bg-sky-50/70 hover:bg-sky-100/70 text-left transition-all group flex items-center justify-between cursor-pointer"
+                >
+                  <div className="flex items-center gap-2">
+                    <div className="w-7 h-7 rounded-lg bg-sky-500 text-white flex items-center justify-center font-bold text-xs">
+                      @
+                    </div>
+                    <div>
+                      <div className="text-xs font-bold text-sky-950 group-hover:text-sky-700">
+                        一键填入全新企业测试邮箱
+                      </div>
+                      <div className="text-[11px] text-sky-600">
+                        自动填入随机前缀与岗位信息，便于立即体验获取验证码与注册
+                      </div>
+                    </div>
+                  </div>
+                  <ArrowRight className="w-4 h-4 text-sky-500 group-hover:translate-x-0.5 transition-transform" />
+                </button>
+              </div>
+            ) : (
+              <div>
+                <div className="flex items-center justify-between text-xs text-slate-500 mb-2.5">
+                  <span className="flex items-center gap-1">
+                    <UserCheck className="w-3.5 h-3.5 text-slate-400" />
+                    快速测试体验账号：
+                  </span>
+                  <span className="text-[11px] text-slate-400 font-mono">密码统一为 admin</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    id="btn-demo-account-phone"
+                    onClick={() => handleQuickDemoLogin("phone")}
+                    className="p-2.5 rounded-xl border border-slate-200 hover:border-sky-400 bg-slate-50 hover:bg-sky-50/50 text-left transition-all group cursor-pointer"
+                  >
+                    <div className="text-xs font-bold text-slate-800 group-hover:text-sky-600 flex items-center gap-1">
+                      <Phone className="w-3 h-3 text-sky-500" />
+                      手机号演示账号
+                    </div>
+                    <div className="text-[11px] text-slate-400 font-mono mt-0.5">13800138000</div>
+                  </button>
 
-              <button
-                type="button"
-                id="btn-demo-account-email"
-                onClick={() => handleQuickDemoLogin("email")}
-                className="p-2.5 rounded-xl border border-slate-200 hover:border-sky-400 bg-slate-50 hover:bg-sky-50/50 text-left transition-all group"
-              >
-                <div className="text-xs font-bold text-slate-800 group-hover:text-sky-600 flex items-center gap-1">
-                  <Mail className="w-3 h-3 text-indigo-500" />
-                  企业邮箱演示账号
+                  <button
+                    type="button"
+                    id="btn-demo-account-email"
+                    onClick={() => handleQuickDemoLogin("email")}
+                    className="p-2.5 rounded-xl border border-slate-200 hover:border-sky-400 bg-slate-50 hover:bg-sky-50/50 text-left transition-all group cursor-pointer"
+                  >
+                    <div className="text-xs font-bold text-slate-800 group-hover:text-sky-600 flex items-center gap-1">
+                      <Mail className="w-3 h-3 text-indigo-500" />
+                      企业邮箱演示账号
+                    </div>
+                    <div className="text-[11px] text-slate-400 font-mono mt-0.5">sales@anker.com</div>
+                  </button>
                 </div>
-                <div className="text-[11px] text-slate-400 font-mono mt-0.5">sales@anker.com</div>
-              </button>
-            </div>
+              </div>
+            )}
           </div>
 
           {/* Bottom Security Note */}

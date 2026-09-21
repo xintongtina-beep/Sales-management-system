@@ -740,37 +740,69 @@ const seedUserEmail: UserAccount = {
 };
 usersDb.set("sales@anker.com", seedUserEmail);
 
+function sanitizeEmail(email: string): string {
+  return email
+    .replace(/[\uFF01-\uFF5E]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0)) // convert fullwidth ASCII (e.g. ＠ -> @)
+    .replace(/。/g, ".")
+    .replace(/，/g, ".")
+    .replace(/＠/g, "@")
+    .replace(/\s+/g, "")
+    .trim()
+    .toLowerCase();
+}
+
 function isValidPhone(phone: string): boolean {
-  return /^1[3-9]\d{9}$/.test(phone.trim());
+  return /^1[3-9]\d{9}$/.test(phone.trim().replace(/\s+/g, ""));
 }
 
 function isValidEmail(email: string): boolean {
-  return /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(email.trim());
+  const sanitized = sanitizeEmail(email);
+  // Flexible RFC 5322 compatible regex: allows subdomains, hyphens, plus tags, multi-part TLDs (e.g. user@sh.anker.com.cn)
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(sanitized) && sanitized.length <= 100;
+}
+
+function normalizeAccount(account: string, type?: string): string {
+  const trimmed = account.trim();
+  if (type === "email" || trimmed.includes("@") || trimmed.includes("＠")) {
+    return sanitizeEmail(trimmed);
+  }
+  return trimmed.replace(/\s+/g, "");
 }
 
 // 1. Send Verification Code (Phone / Email)
 app.post("/api/auth/send-code", (req, res) => {
   const { account, type = "phone", purpose = "login" } = req.body;
-  if (!account || typeof account !== "string") {
-    return res.status(400).json({ error: "请输入手机号或邮箱" });
+  if (!account || typeof account !== "string" || !account.trim()) {
+    return res.status(400).json({ error: "请输入手机号或电子邮箱" });
   }
 
-  const cleanAccount = account.trim();
+  // Automatically detect account type if user typed email into phone or vice versa
+  const actualType = (account.includes("@") || account.includes("＠") || type === "email") ? "email" : "phone";
+  const cleanAccount = normalizeAccount(account, actualType);
 
   // Validate format
-  if (type === "phone") {
+  if (actualType === "phone") {
     if (!isValidPhone(cleanAccount)) {
       return res.status(400).json({ error: "请输入正确的11位中国大陆手机号码 (如 13800138000)" });
     }
-  } else if (type === "email") {
-    if (!isValidEmail(cleanAccount)) {
-      return res.status(400).json({ error: "请输入规范的电子邮箱地址 (如 user@company.com)" });
-    }
   } else {
-    return res.status(400).json({ error: "不支持的账号类型" });
+    if (!isValidEmail(cleanAccount)) {
+      return res.status(400).json({ error: "请输入规范的电子邮箱地址 (如 user@company.com 或 name@sh.anker.com)" });
+    }
   }
 
-  // Cooldown check (60s limit)
+  // If registering, check if account is already registered
+  if (purpose === "register" && usersDb.has(cleanAccount)) {
+    const existing = usersDb.get(cleanAccount);
+    return res.status(400).json({ 
+      error: `该${actualType === "email" ? "企业邮箱" : "手机号"}（${cleanAccount}）已注册为正式账号（姓名：${existing?.name || "已存在"}），无需重复注册。`,
+      isRegistered: true,
+      account: cleanAccount,
+      type: actualType
+    });
+  }
+
+  // Cooldown check (60s limit per account)
   const existingCode = codesDb.get(cleanAccount);
   const now = Date.now();
   if (existingCode && now - existingCode.lastSentAt < 60000) {
@@ -789,16 +821,17 @@ app.post("/api/auth/send-code", (req, res) => {
     code,
     expiresAt,
     lastSentAt: now,
-    type,
+    type: actualType,
     purpose: purpose as any
   });
 
-  console.log(`🔑 [AUTH-CODE] Sent ${type} verification code to ${cleanAccount}: ${code} (purpose: ${purpose})`);
+  console.log(`🔑 [AUTH-CODE] Sent ${actualType} verification code to ${cleanAccount}: ${code} (purpose: ${purpose})`);
 
   return res.json({
     success: true,
-    message: `验证码已成功发送至您的${type === "phone" ? "手机" : "邮箱"}`,
+    message: `验证码已成功发送至您的${actualType === "phone" ? "手机" : "企业邮箱"}`,
     account: cleanAccount,
+    type: actualType,
     code: code, // returned for preview convenience and instant autofill
     expiresIn: 300
   });
@@ -812,19 +845,24 @@ app.post("/api/auth/register", (req, res) => {
     return res.status(400).json({ error: "请填写完整注册信息（账号、验证码、姓名）" });
   }
 
-  const cleanAccount = account.trim();
+  const actualType = (account.includes("@") || account.includes("＠") || type === "email") ? "email" : "phone";
+  const cleanAccount = normalizeAccount(account, actualType);
 
   // Validate account format
-  if (type === "phone" && !isValidPhone(cleanAccount)) {
+  if (actualType === "phone" && !isValidPhone(cleanAccount)) {
     return res.status(400).json({ error: "手机号码格式不正确" });
   }
-  if (type === "email" && !isValidEmail(cleanAccount)) {
+  if (actualType === "email" && !isValidEmail(cleanAccount)) {
     return res.status(400).json({ error: "电子邮箱格式不正确" });
   }
 
   // Check if account already exists
   if (usersDb.has(cleanAccount)) {
-    return res.status(400).json({ error: "该账号已注册，请直接进行登录" });
+    return res.status(400).json({ 
+      error: "该账号已注册，请直接使用验证码或密码登录",
+      isRegistered: true,
+      account: cleanAccount
+    });
   }
 
   // Check verification code
@@ -842,10 +880,10 @@ app.post("/api/auth/register", (req, res) => {
   const nowStr = new Date().toLocaleString("zh-CN", { hour12: false });
   const newUser: UserAccount = {
     id: userId,
-    accountType: type,
+    accountType: actualType,
     account: cleanAccount,
     name: name.trim(),
-    role: role?.trim() || "销售业务顾问",
+    role: role?.trim() || "销售客户经理",
     department: department?.trim() || "华东大区销售部",
     password: password?.trim() || "",
     avatar: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80",
@@ -879,13 +917,14 @@ app.post("/api/auth/login-code", (req, res) => {
     return res.status(400).json({ error: "请输入账号和验证码" });
   }
 
-  const cleanAccount = account.trim();
+  const actualType = (account.includes("@") || account.includes("＠") || type === "email") ? "email" : "phone";
+  const cleanAccount = normalizeAccount(account, actualType);
 
   // Validate format
-  if (type === "phone" && !isValidPhone(cleanAccount)) {
+  if (actualType === "phone" && !isValidPhone(cleanAccount)) {
     return res.status(400).json({ error: "手机号码格式不正确" });
   }
-  if (type === "email" && !isValidEmail(cleanAccount)) {
+  if (actualType === "email" && !isValidEmail(cleanAccount)) {
     return res.status(400).json({ error: "电子邮箱格式不正确" });
   }
 
@@ -907,13 +946,13 @@ app.post("/api/auth/login-code", (req, res) => {
   if (!user) {
     // Auto register for seamless quick verification code login
     const userId = "usr_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    const autoName = type === "phone" 
+    const autoName = actualType === "phone" 
       ? `销售代表 (${cleanAccount.slice(-4)})` 
       : `销售代表 (${cleanAccount.split("@")[0]})`;
     
     user = {
       id: userId,
-      accountType: type,
+      accountType: actualType,
       account: cleanAccount,
       name: autoName,
       role: "销售代表",
@@ -949,7 +988,7 @@ app.post("/api/auth/login-password", (req, res) => {
     return res.status(400).json({ error: "请输入账号和密码" });
   }
 
-  const cleanAccount = account.trim();
+  const cleanAccount = normalizeAccount(account);
   const user = usersDb.get(cleanAccount);
 
   if (!user) {
