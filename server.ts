@@ -719,34 +719,7 @@ const usersDb = new Map<string, UserAccount>();
 const codesDb = new Map<string, StoredCode>();
 const sessionTokens = new Map<string, string>(); // token -> userId
 
-// Seed default test accounts for quick demo & verification
-const seedUserPhone: UserAccount = {
-  id: "usr_anker_001",
-  accountType: "phone",
-  account: "13800138000",
-  name: "张经理 (销售业务总监)",
-  role: "销售业务总监",
-  department: "智能硬件销售一部",
-  password: "admin",
-  avatar: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80",
-  registeredAt: "2026-01-01 09:00:00",
-  lastLoginAt: "2026-07-06 08:30:00"
-};
-usersDb.set("13800138000", seedUserPhone);
-
-const seedUserEmail: UserAccount = {
-  id: "usr_anker_002",
-  accountType: "email",
-  account: "sales@anker.com",
-  name: "李主管 (大客户销售经理)",
-  role: "大客户销售经理",
-  department: "战略客户部",
-  password: "admin",
-  avatar: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=100&auto=format&fit=crop&q=80",
-  registeredAt: "2026-02-15 10:00:00",
-  lastLoginAt: "2026-07-06 09:15:00"
-};
-usersDb.set("sales@anker.com", seedUserEmail);
+// No pre-seeded accounts: users register their genuine enterprise account via phone / email verification code
 
 function sanitizeEmail(email: string): string {
   return email
@@ -1054,13 +1027,10 @@ app.get("/api/auth/me", (req, res) => {
   return res.json({ success: true, user: safeUser });
 });
 
-// 6. Test / Demo Seed Accounts info
+// 6. Test / Demo Seed Accounts info (Disabled: Preset demo accounts removed by user request)
 app.get("/api/auth/demo-accounts", (req, res) => {
   return res.json({
-    accounts: [
-      { type: "phone", account: "13800138000", name: "张经理 (业务总监)", role: "销售业务总监", password: "admin" },
-      { type: "email", account: "sales@anker.com", name: "李主管 (大客户经理)", role: "大客户销售经理", password: "admin" }
-    ]
+    accounts: []
   });
 });
 

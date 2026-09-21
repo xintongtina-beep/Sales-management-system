@@ -150,7 +150,7 @@ export default function DashboardView({
 
   const itemVariants = {
     hidden: { y: 15, opacity: 0 },
-    show: { y: 0, opacity: 1, transition: { type: "spring", stiffness: 100 } }
+    show: { y: 0, opacity: 1, transition: { type: "spring" as const, stiffness: 100 } }
   };
 
   return (
